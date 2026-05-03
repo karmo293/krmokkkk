@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Shield, Search, Lock, BookOpen, CheckCircle2, AlertTriangle, ShieldCheck, Terminal, Loader2, Globe, Server, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Type } from '@google/genai';
 
 // --- Types ---
 
@@ -24,6 +25,8 @@ interface AuditResult {
   };
   logs: string[];
 }
+
+// ... Card, Badge etc stay same ...
 
 // --- Components ---
 
@@ -317,17 +320,98 @@ export default function App() {
 
   const handleAudit = async () => {
     setIsScanning(true);
+    setAuditData(null);
+    
     try {
-      const response = await fetch('/api/audit', {
+      // 1. Fetch headers via proxy to avoid CORS
+      const headerResponse = await fetch('/api/headers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),
       });
-      const result = await response.json();
+      const { headers } = await headerResponse.json();
+
+      // 2. Initialize AI
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error("GEMINI_API_KEY not found in environment.");
+      }
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      
+      const prompt = `Perform a simulated security audit context analysis for the URL: ${targetUrl}. 
+      Actual headers retrieved (if any): ${JSON.stringify(headers || {})}.
+      
+      Identify:
+      - Related subdomains (simulation).
+      - Open ports typical for this service.
+      - Vulnerability scan for missing security headers.
+      - Potential common admin login pages.
+      - A risk score out of 10.
+      
+      Return output as strict JSON.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              subdomains: { type: Type.ARRAY, items: { type: Type.STRING } },
+              open_ports: { type: Type.ARRAY, items: { type: Type.STRING } },
+              vulnerabilities: { 
+                type: Type.ARRAY, 
+                items: { 
+                  type: Type.OBJECT, 
+                  properties: {
+                    type: { type: Type.STRING },
+                    severity: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                    hint: { type: Type.STRING }
+                  },
+                  required: ['type', 'severity', 'description', 'hint']
+                } 
+              },
+              admin_paths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              risk_score: { type: Type.STRING },
+              metrics: {
+                type: Type.OBJECT,
+                properties: {
+                  findings: { type: Type.NUMBER },
+                  ports: { type: Type.NUMBER },
+                  reqSec: { type: Type.NUMBER }
+                },
+                required: ['findings', 'ports', 'reqSec']
+              },
+              logs: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['subdomains', 'open_ports', 'vulnerabilities', 'admin_paths', 'risk_score', 'metrics', 'logs']
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text || '{}');
       setAuditData(result);
       setActiveTab('recon');
     } catch (error) {
       console.error('Audit failed:', error);
+      // Fallback for errors
+      setAuditData({
+        subdomains: [],
+        open_ports: [],
+        vulnerabilities: [
+          { 
+            type: 'ANALYSIS_ERROR', 
+            severity: 'INFO', 
+            description: `Audit failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 
+            hint: 'Ensure GEMINI_API_KEY is configured in your project secrets.' 
+          }
+        ],
+        admin_paths: [],
+        risk_score: 'N/A',
+        metrics: { findings: 0, ports: 0, reqSec: 0 },
+        logs: [`[FATAL] ${error instanceof Error ? error.message : 'System fault'}`]
+      });
     } finally {
       setIsScanning(false);
     }
@@ -374,19 +458,35 @@ export default function App() {
             <button 
               onClick={handleAudit}
               disabled={isScanning}
-              className="bg-emerald-600 text-white px-8 py-2.5 rounded font-bold hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all uppercase text-[10px] tracking-widest active:scale-95 flex items-center gap-2 group"
+              className="bg-emerald-600 text-white px-8 py-2.5 rounded font-bold hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all uppercase text-[10px] tracking-widest active:scale-95 flex items-center gap-2 group overflow-hidden h-10 min-w-[180px] justify-center"
             >
-              {isScanning ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  ANALYZING_PHASES...
-                </>
-              ) : (
-                <>
-                  <Activity className="w-3 h-3 group-hover:animate-pulse" />
-                  INIT_AUDIT
-                </>
-              )}
+              <AnimatePresence mode="wait" initial={false}>
+                {isScanning ? (
+                  <motion.div 
+                    key="scanning-state"
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    exit={{ y: -20, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex items-center gap-2"
+                  >
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span className="shrink-0 tracking-tighter">ANALYZING_CORE...</span>
+                  </motion.div>
+                ) : (
+                  <motion.div 
+                    key="idle-state"
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    exit={{ y: -20, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="flex items-center gap-2"
+                  >
+                    <Activity className="w-3 h-3 group-hover:animate-pulse" />
+                    <span className="shrink-0 tracking-tighter">INITIALIZE_AUDIT</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </button>
           </div>
         </header>
@@ -415,11 +515,11 @@ export default function App() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
            <div className="bg-black/40 border border-slate-800 p-4 rounded shadow-inner flex flex-col">
               <span className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-1">Knowledge Units</span>
-              <span className="text-2xl font-mono text-emerald-400">{auditData?.metrics.findings.toString().padStart(2, '0') || '00'}_</span>
+              <span className="text-2xl font-mono text-emerald-400">{(auditData?.metrics?.findings ?? 0).toString().padStart(2, '0')}_</span>
            </div>
            <div className="bg-black/40 border border-slate-800 p-4 rounded shadow-inner flex flex-col">
               <span className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-1">Critical Flaws</span>
-              <span className="text-2xl font-mono text-red-500">{auditData?.vulnerabilities.filter(v => v.severity === 'CRITICAL').length.toString().padStart(2, '0') || '00'}_</span>
+              <span className="text-2xl font-mono text-red-500">{(auditData?.vulnerabilities?.filter(v => v.severity === 'CRITICAL').length ?? 0).toString().padStart(2, '0')}_</span>
            </div>
            <div className="bg-black/40 border border-slate-800 p-4 rounded shadow-inner flex flex-col">
               <span className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-1">Risk Index</span>
@@ -427,7 +527,7 @@ export default function App() {
            </div>
            <div className="bg-black/40 border border-slate-800 p-4 rounded shadow-inner flex flex-col">
               <span className="text-[9px] text-slate-500 uppercase font-bold tracking-widest mb-1">Requests/Sec</span>
-              <span className="text-2xl font-mono text-amber-500">{auditData?.metrics.reqSec || '0'}Hz</span>
+              <span className="text-2xl font-mono text-amber-500">{(auditData?.metrics?.reqSec ?? 0)}Hz</span>
            </div>
         </div>
 
