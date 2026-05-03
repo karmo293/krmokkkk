@@ -1,0 +1,6 @@
+{
+  "name": "Sentinel Security Audit Guide",
+  "description": "An interactive educational dashboard for understanding common web vulnerabilities, defensive strategies, and performing ethical security audits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
